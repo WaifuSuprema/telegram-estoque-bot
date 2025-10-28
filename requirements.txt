@@ -1,0 +1,6 @@
+python-telegram-bot==20.8
+pandas==2.2.0
+
+openpyxl é necessário para o pandas ler e escrever arquivos .xlsx
+
+openpyxl==3.1.2
