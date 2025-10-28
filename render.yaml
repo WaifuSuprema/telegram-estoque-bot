@@ -1,0 +1,23 @@
+Este arquivo configura o serviço do Render para o nosso bot.
+
+O Render lê este arquivo automaticamente para saber como construir e rodar o projeto.
+
+services:
+
+Define o tipo de serviço. 'worker' é para processos que rodam em background (como um bot).
+
+type: worker
+name: telegram-estoque-bot
+env: python
+
+Comandos de build e inicialização
+
+buildCommand: "pip install -r requirements.txt"
+startCommand: "python main.py"
+
+envVars:
+
+Fixa a versão do Python para 3.11.8, resolvendo o erro de metadados
+
+key: PYTHON_VERSION
+value: 3.11.8
