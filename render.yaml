@@ -17,7 +17,9 @@ startCommand: "python main.py"
 
 envVars:
 
-Fixa a versão do Python para 3.11.8, resolvendo o erro de metadados
+Define a variável de ambiente PYTHON_VERSION.
+
+Fixar a versão para 3.11.8 resolve o erro de metadados que estávamos vendo.
 
 key: PYTHON_VERSION
 value: 3.11.8
