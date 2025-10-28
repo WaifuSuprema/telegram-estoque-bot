@@ -1,112 +1,93 @@
-# main.py - Telegram stock bot for Render
-# Searches columns: Endereço, UA, Produto, Descrição (Quantidade is displayed but NOT used for search)
 import os
-import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import pandas as pd
+import logging
+from flask import Flask, request
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext._utils.types import BD
+from telegram.ext import ApplicationBuilder
 
-# Logging
+# === Configuração básica ===
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-ARQUIVO_ESTOQUE = "estoque.xlsx"  # file saved in app working directory
-TOKEN = os.environ.get("BOT_TOKEN")  # read token from Render environment variables
+TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.getenv("PORT", 10000))  # Render define automaticamente
+ARQUIVO_ESTOQUE = "estoque.xlsx"
 
-# Helper: load excel if exists
+app_flask = Flask(__name__)
+bot_app: Application = None
+
+# === Funções de estoque ===
 def carregar_estoque():
-    try:
-        if os.path.exists(ARQUIVO_ESTOQUE):
-            # force openpyxl engine for .xlsx
-            df = pd.read_excel(ARQUIVO_ESTOQUE, engine="openpyxl")
-            # Normalize columns (strip spaces)
-            df.columns = [str(c).strip() for c in df.columns]
-            return df
-    except Exception as e:
-        logger.error(f"Erro ao carregar o estoque: {e}")
-        return None
+    if os.path.exists(ARQUIVO_ESTOQUE):
+        return pd.read_excel(ARQUIVO_ESTOQUE, engine="openpyxl")
     return None
 
-# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Olá! Eu sou seu Bot de Estoque.\n\n"
-        "1) Envie o arquivo Excel (.xlsx) com seu estoque (colunas: Endereço, UA, Produto, Descrição, Quantidade).\n"
-        "2) Use /buscar <termo> para procurar nas colunas Endereço, UA, Produto e Descrição.\n\n"
-        "Exemplo: /buscar parafuso\n\n"
-        "Observação: A coluna 'Quantidade' é apenas exibida, não utilizada como filtro."
+        "👋 Olá! Eu sou o bot de estoque.\n"
+        "Envie um arquivo Excel (.xlsx) e use /buscar <termo> para consultar."
     )
 
-# /buscar command - searches only in selected columns (not Quantidade)
 async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    df = carregar_estoque()
-    if df is None:
-        await update.message.reply_text("❌ Nenhum arquivo de estoque foi encontrado. Envie um .xlsx para começar.")
+    estoque = carregar_estoque()
+    if estoque is None:
+        await update.message.reply_text("❌ Nenhum arquivo de estoque foi encontrado.")
         return
 
-    args = context.args
-    if not args:
-        await update.message.reply_text("Use assim: /buscar <termo>")
+    termo = " ".join(context.args).lower() if context.args else ""
+    if not termo:
+        await update.message.reply_text("Use assim: /buscar <texto>")
         return
 
-    termo = " ".join(args).lower()
+    colunas_busca = [c for c in estoque.columns if str(c).lower() != "quantidade"]
+    filtrado = estoque[
+        estoque[colunas_busca].astype(str).apply(lambda row: row.str.lower().str.contains(termo).any(), axis=1)
+    ]
 
-    # Columns to search (prefer user-specified names) - fallback to any string columns except Quantidade
-    preferred = ["Endereço", "UA", "Produto", "Descrição"]
-    available = [c for c in preferred if c in df.columns]
-    if not available:
-        # fallback to searching all columns except 'Quantidade' if preferred headers not found
-        available = [c for c in df.columns if str(c).strip().lower() != "quantidade"]
-
-    try:
-        mask_rows = df[available].astype(str).apply(lambda col: col.str.lower().str.contains(termo, na=False))
-        # any column match per row
-        matched = df[mask_rows.any(axis=1)]
-    except Exception as e:
-        logger.error(f"Erro na filtragem: {e}")
-        await update.message.reply_text("❌ Erro ao processar a busca. Verifique o arquivo e tente novamente.")
-        return
-
-    if matched.empty:
+    if filtrado.empty:
         await update.message.reply_text("Nenhum resultado encontrado.")
-        return
+    else:
+        texto = filtrado.to_string(index=False)
+        if len(texto) > 4000:
+            texto = texto[:4000] + "\n\n⚠️ Resultado muito longo, mostrado parcialmente."
+        await update.message.reply_text(f"📦 Resultados encontrados:\n\n{texto}")
 
-    texto = matched.to_string(index=False)
-    if len(texto) > 4000:
-        texto = texto[:4000] + "\n\n⚠️ Resultado muito longo, mostrei apenas parte."
-    await update.message.reply_text(f"📦 Resultados encontrados:\n\n{texto}")
-
-# receive uploaded .xlsx and replace inventory file
 async def receber_arquivo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.document:
         doc = update.message.document
-        name = doc.file_name or ""
-        if not name.lower().endswith(".xlsx"):
+        if not doc.file_name.endswith(".xlsx"):
             await update.message.reply_text("❌ Envie apenas arquivos .xlsx, por favor.")
             return
-        try:
-            file = await context.bot.get_file(doc.file_id)
-            await file.download_to_drive(ARQUIVO_ESTOQUE)
-            await update.message.reply_text("✅ O arquivo de estoque foi atualizado com sucesso!")
-        except Exception as e:
-            logger.error(f"Erro ao baixar/salvar arquivo: {e}")
-            await update.message.reply_text("❌ Falha ao salvar o arquivo. Tente novamente.")
-    else:
-        await update.message.reply_text("Envie o arquivo Excel (.xlsx) contendo o novo estoque.")
+        file = await context.bot.get_file(doc.file_id)
+        await file.download_to_drive(ARQUIVO_ESTOQUE)
+        await update.message.reply_text("✅ Arquivo de estoque atualizado com sucesso!")
 
-def main():
-    if not TOKEN:
-        logger.error("BOT_TOKEN não configurado. Defina a variável de ambiente BOT_TOKEN no Render.")
-        print("ERRO: BOT_TOKEN não encontrado.")
-        return
+# === Inicialização do bot ===
+async def iniciar_bot():
+    global bot_app
+    bot_app = ApplicationBuilder().token(TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("buscar", buscar))
+    bot_app.add_handler(MessageHandler(filters.Document.ALL & (~filters.COMMAND), receber_arquivo))
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling()  # só para inicializar handlers
 
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("buscar", buscar))
-    app.add_handler(MessageHandler(filters.Document.ALL & (~filters.COMMAND), receber_arquivo))
+# === Rota Webhook ===
+@app_flask.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot_app.bot)
+    bot_app.update_queue.put_nowait(update)
+    return "OK", 200
 
-    logger.info("🤖 Bot iniciado (polling).")
-    app.run_polling()
+@app_flask.route("/", methods=["GET"])
+def home():
+    return "🤖 Bot de Estoque rodando via Webhook!", 200
 
+# === Inicialização ===
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(iniciar_bot())
+    app_flask.run(host="0.0.0.0", port=PORT)
